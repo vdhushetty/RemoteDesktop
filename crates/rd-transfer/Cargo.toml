@@ -1,0 +1,12 @@
+[package]
+name = "rd-transfer"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+rd-protocol = { workspace = true }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+dirs = "6"

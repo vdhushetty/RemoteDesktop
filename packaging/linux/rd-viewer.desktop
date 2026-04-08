@@ -1,0 +1,8 @@
+[Desktop Entry]
+Name=Remote Desktop Viewer
+Comment=Connect to and control remote machines
+Exec=rd-viewer
+Type=Application
+Categories=Utility;RemoteAccess;
+StartupNotify=true
+Terminal=false

@@ -1,0 +1,11 @@
+[package]
+name = "rd-input"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+rd-protocol = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+enigo = "0.3"

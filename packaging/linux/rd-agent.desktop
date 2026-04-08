@@ -1,0 +1,8 @@
+[Desktop Entry]
+Name=Remote Desktop Agent
+Comment=Allow remote access to this machine
+Exec=rd-agent
+Type=Application
+Categories=Utility;RemoteAccess;
+StartupNotify=false
+Terminal=false

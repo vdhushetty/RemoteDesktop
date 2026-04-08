@@ -1,0 +1,27 @@
+[package]
+name = "rd-viewer"
+version.workspace = true
+edition.workspace = true
+description = "Remote Desktop Viewer - connects to and controls remote machines"
+
+[package.metadata.packager]
+product-name = "Remote Desktop Viewer"
+identifier = "com.remotedesktop.viewer"
+category = "Utility"
+formats = ["deb", "nsis", "dmg"]
+
+[dependencies]
+rd-protocol = { workspace = true }
+rd-codec = { workspace = true }
+rd-net = { workspace = true }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+eframe = "0.30"
+hostname = "0.4"
+iroh = "0.97"
+rd-clipboard = { workspace = true }
+rd-transfer = { workspace = true }
+rd-audio = { workspace = true }
+rfd = "0.15"

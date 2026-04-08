@@ -1,0 +1,56 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/rd-protocol",
+    "crates/rd-capture",
+    "crates/rd-codec",
+    "crates/rd-input",
+    "crates/rd-net",
+    "crates/rd-clipboard",
+    "crates/rd-transfer",
+    "crates/rd-audio",
+    "apps/rd-agent",
+    "apps/rd-viewer",
+    "apps/rd-relay",
+    "tools/rd-smoke-test",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[workspace.dependencies]
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# Serialization
+prost = "0.13"
+prost-types = "0.13"
+bytes = "1"
+
+# Networking
+quinn = "0.11"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+
+# Error handling & logging
+anyhow = "1"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Workspace crates
+rd-protocol = { path = "crates/rd-protocol" }
+rd-capture = { path = "crates/rd-capture" }
+rd-codec = { path = "crates/rd-codec" }
+rd-input = { path = "crates/rd-input" }
+rd-net = { path = "crates/rd-net" }
+rd-clipboard = { path = "crates/rd-clipboard" }
+rd-transfer = { path = "crates/rd-transfer" }
+rd-audio = { path = "crates/rd-audio" }
+
+[profile.release]
+lto = "thin"
+strip = true
+opt-level = 3
+codegen-units = 1

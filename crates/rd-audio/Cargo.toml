@@ -1,0 +1,11 @@
+[package]
+name = "rd-audio"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+cpal = "0.17"
+opus = "0.3"

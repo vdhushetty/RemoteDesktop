@@ -1,0 +1,212 @@
+syntax = "proto3";
+
+package rd.protocol;
+
+// Top-level message wrapper for all communication
+message Message {
+    uint64 sequence = 1;
+    uint64 timestamp_us = 2;
+    oneof payload {
+        SessionInit session_init = 10;
+        SessionAccept session_accept = 11;
+        SessionReject session_reject = 12;
+        SessionEnd session_end = 13;
+        VideoFrame video_frame = 20;
+        VideoRequest video_request = 21;
+        InputEvent input_event = 30;
+        CursorInfo cursor_info = 31;
+        ClipboardUpdate clipboard_update = 32;
+        FileTransferRequest file_transfer_request = 60;
+        FileTransferResponse file_transfer_response = 61;
+        FileChunk file_chunk = 62;
+        AudioFrame audio_frame = 35;
+        Heartbeat heartbeat = 40;
+        HeartbeatAck heartbeat_ack = 41;
+        CodecNegotiation codec_negotiation = 50;
+        CodecNegotiationResponse codec_negotiation_response = 51;
+    }
+}
+
+// Session establishment
+message SessionInit {
+    string device_name = 1;
+    string os = 2;
+    uint32 screen_width = 3;
+    uint32 screen_height = 4;
+    repeated CodecCapability codecs = 5;
+}
+
+message SessionAccept {
+    string device_name = 1;
+    string os = 2;
+    Codec selected_codec = 3;
+}
+
+message SessionReject {
+    string reason = 1;
+}
+
+message SessionEnd {
+    string reason = 1;
+}
+
+// Codec negotiation
+message CodecNegotiation {
+    repeated CodecCapability supported_codecs = 1;
+}
+
+message CodecNegotiationResponse {
+    Codec selected_codec = 1;
+}
+
+message CodecCapability {
+    Codec codec = 1;
+    bool hardware_accelerated = 2;
+}
+
+enum Codec {
+    CODEC_UNSPECIFIED = 0;
+    CODEC_VP9 = 1;
+    CODEC_VP8 = 2;
+    CODEC_H264 = 3;
+    CODEC_H265 = 4;
+}
+
+// Video frames
+message VideoFrame {
+    uint64 frame_id = 1;
+    Codec codec = 2;
+    bool is_keyframe = 3;
+    uint32 width = 4;
+    uint32 height = 5;
+    bytes data = 6;
+    // Dirty rectangles - regions that changed
+    repeated Rect dirty_rects = 7;
+}
+
+message VideoRequest {
+    bool request_keyframe = 1;
+    uint32 target_fps = 2;
+    uint32 target_bitrate_kbps = 3;
+}
+
+message Rect {
+    uint32 x = 1;
+    uint32 y = 2;
+    uint32 width = 3;
+    uint32 height = 4;
+}
+
+// Input events from viewer to agent
+message InputEvent {
+    oneof event {
+        MouseMove mouse_move = 1;
+        MouseButton mouse_button = 2;
+        MouseScroll mouse_scroll = 3;
+        KeyEvent key_event = 4;
+    }
+}
+
+message MouseMove {
+    // Normalized coordinates (0.0 - 1.0) relative to screen
+    double x = 1;
+    double y = 2;
+}
+
+message MouseButton {
+    MouseButtonType button = 1;
+    ButtonAction action = 2;
+    double x = 3;
+    double y = 4;
+}
+
+message MouseScroll {
+    double delta_x = 1;
+    double delta_y = 2;
+    double x = 3;
+    double y = 4;
+}
+
+message KeyEvent {
+    uint32 keycode = 1;
+    ButtonAction action = 2;
+    uint32 modifiers = 3;
+}
+
+enum MouseButtonType {
+    MOUSE_BUTTON_UNSPECIFIED = 0;
+    MOUSE_BUTTON_LEFT = 1;
+    MOUSE_BUTTON_RIGHT = 2;
+    MOUSE_BUTTON_MIDDLE = 3;
+}
+
+enum ButtonAction {
+    BUTTON_ACTION_UNSPECIFIED = 0;
+    BUTTON_ACTION_PRESS = 1;
+    BUTTON_ACTION_RELEASE = 2;
+}
+
+// Cursor info from agent to viewer
+message CursorInfo {
+    // Normalized position (0.0 - 1.0)
+    double x = 1;
+    double y = 2;
+    bool visible = 3;
+    CursorShape shape = 4;
+}
+
+enum CursorShape {
+    CURSOR_SHAPE_DEFAULT = 0;
+    CURSOR_SHAPE_POINTER = 1;
+    CURSOR_SHAPE_TEXT = 2;
+    CURSOR_SHAPE_CROSSHAIR = 3;
+    CURSOR_SHAPE_MOVE = 4;
+    CURSOR_SHAPE_NOT_ALLOWED = 5;
+    CURSOR_SHAPE_RESIZE_NS = 6;
+    CURSOR_SHAPE_RESIZE_EW = 7;
+    CURSOR_SHAPE_WAIT = 8;
+}
+
+// Clipboard sync
+message ClipboardUpdate {
+    string text = 1;
+}
+
+// File transfer
+message FileTransferRequest {
+    uint64 transfer_id = 1;
+    string filename = 2;
+    uint64 file_size = 3;
+    // Direction: true = viewer->agent, false = agent->viewer
+    bool upload = 4;
+}
+
+message FileTransferResponse {
+    uint64 transfer_id = 1;
+    bool accepted = 2;
+    string reason = 3;
+}
+
+message FileChunk {
+    uint64 transfer_id = 1;
+    uint64 offset = 2;
+    bytes data = 3;
+    bool is_last = 4;
+}
+
+// Audio streaming
+message AudioFrame {
+    bytes opus_data = 1;
+    uint32 sample_rate = 2;
+    uint32 channels = 3;
+}
+
+// Heartbeat for connection keepalive
+message Heartbeat {
+    uint64 timestamp_us = 1;
+}
+
+message HeartbeatAck {
+    uint64 echo_timestamp_us = 1;
+    uint64 server_timestamp_us = 2;
+}

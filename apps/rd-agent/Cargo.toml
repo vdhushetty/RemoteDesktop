@@ -1,0 +1,30 @@
+[package]
+name = "rd-agent"
+version.workspace = true
+edition.workspace = true
+description = "Remote Desktop Agent - runs on the machine to be controlled"
+
+[package.metadata.packager]
+product-name = "Remote Desktop Agent"
+identifier = "com.remotedesktop.agent"
+category = "Utility"
+formats = ["deb", "nsis", "dmg"]
+
+[dependencies]
+rd-protocol = { workspace = true }
+rd-capture = { workspace = true }
+rd-codec = { workspace = true }
+rd-input = { workspace = true }
+rd-net = { workspace = true }
+tokio = { workspace = true }
+quinn = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+hostname = "0.4"
+iroh = "0.97"
+rd-clipboard = { workspace = true }
+rd-transfer = { workspace = true }
+rd-audio = { workspace = true }
+tray-icon = "0.22"
+muda = "0.17"

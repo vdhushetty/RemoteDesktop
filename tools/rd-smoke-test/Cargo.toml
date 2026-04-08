@@ -1,0 +1,10 @@
+[package]
+name = "rd-smoke-test"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+rd-capture = { workspace = true }
+rd-codec = { workspace = true }
+rd-clipboard = { workspace = true }
+anyhow = { workspace = true }

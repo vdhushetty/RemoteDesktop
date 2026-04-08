@@ -1,0 +1,12 @@
+[package]
+name = "rd-codec"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+rd-protocol = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+vpx-encode = { version = "0.6", features = ["vp9"] }
+env-libvpx-sys = { version = "5", features = ["generate"] }

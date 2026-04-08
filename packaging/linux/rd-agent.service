@@ -1,0 +1,16 @@
+[Unit]
+Description=Remote Desktop Agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/rd-agent
+Restart=always
+RestartSec=5
+Environment=RUST_LOG=info
+# Run as the logged-in user for screen capture access
+User=%I
+
+[Install]
+WantedBy=multi-user.target
