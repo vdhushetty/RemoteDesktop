@@ -1,0 +1,12 @@
+[package]
+name = "rd-connect-test"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+rd-net = { workspace = true }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+iroh = "0.97"

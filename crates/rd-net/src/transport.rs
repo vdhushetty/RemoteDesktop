@@ -103,7 +103,15 @@ fn generate_self_signed_config() -> anyhow::Result<(ServerConfig, Vec<u8>)> {
 
     let cert_chain = vec![rustls::pki_types::CertificateDer::from(cert_der.clone())];
 
-    let mut server_config = ServerConfig::with_single_cert(cert_chain, key_der.into())?;
+    // Build rustls server config with ALPN
+    let mut rustls_config = rustls::ServerConfig::builder()
+        .with_no_client_auth()
+        .with_single_cert(cert_chain, key_der.into())?;
+    rustls_config.alpn_protocols = vec![ALPN_PROTOCOL.to_vec()];
+
+    let mut server_config = ServerConfig::with_crypto(Arc::new(
+        quinn::crypto::rustls::QuicServerConfig::try_from(rustls_config)?
+    ));
 
     // Configure transport for low latency
     let transport = Arc::get_mut(&mut server_config.transport).unwrap();

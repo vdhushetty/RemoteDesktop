@@ -14,6 +14,7 @@ members = [
     "apps/rd-desktop",
     "apps/rd-relay",
     "tools/rd-smoke-test",
+    "tools/rd-connect-test",
 ]
 
 [workspace.package]
