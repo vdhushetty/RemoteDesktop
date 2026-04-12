@@ -105,6 +105,11 @@ jobs:
             .\bootstrap-vcpkg.bat
             .\vcpkg install libvpx:x64-windows-static opus:x64-windows-static
           }
+          # env-libvpx-sys looks for 'libvpx' but vcpkg names it 'vpx'
+          $libDir = "C:\vcpkg\installed\x64-windows-static\lib"
+          if ((Test-Path "$libDir\vpx.lib") -and -not (Test-Path "$libDir\libvpx.lib")) {
+            Copy-Item "$libDir\vpx.lib" "$libDir\libvpx.lib"
+          }
         shell: pwsh
 
       - name: Build release
