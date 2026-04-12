@@ -1,8 +1,9 @@
-name: Build
+name: Build & Release
 
 on:
   push:
     branches: [main]
+    tags: ['v*']
   pull_request:
     branches: [main]
 
@@ -16,13 +17,16 @@ jobs:
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-            artifact: linux-amd64
+            platform: linux
+            arch: x86_64
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-            artifact: windows-amd64
+            platform: windows
+            arch: x86_64
           - os: macos-latest
             target: aarch64-apple-darwin
-            artifact: macos-arm64
+            platform: macos
+            arch: aarch64
 
     runs-on: ${{ matrix.os }}
     steps:
@@ -39,7 +43,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libvpx-dev libx11-dev libxcb1-dev \
             libxcb-shm0-dev pkg-config libasound2-dev libopus-dev \
-            protobuf-compiler
+            protobuf-compiler libclang-dev dpkg
 
       - name: Install macOS dependencies
         if: matrix.os == 'macos-latest'
@@ -47,27 +51,104 @@ jobs:
 
       - name: Install Windows dependencies
         if: matrix.os == 'windows-latest'
-        run: choco install protoc
+        run: |
+          choco install protoc
+          git clone https://github.com/microsoft/vcpkg.git C:\vcpkg
+          C:\vcpkg\bootstrap-vcpkg.bat
+          C:\vcpkg\vcpkg install libvpx:x64-windows opus:x64-windows
+        shell: cmd
 
-      - name: Build
+      - name: Build release
         run: cargo build --release --bin rd-agent --bin rd-viewer --bin rd-relay
+        env:
+          VCPKG_ROOT: C:\vcpkg
+
+      # Rename binaries with platform suffix
+      - name: Package (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          mkdir -p dist
+          cp target/release/rd-agent dist/rd-agent-linux-x86_64
+          cp target/release/rd-viewer dist/rd-viewer-linux-x86_64
+          cp target/release/rd-relay dist/rd-relay-linux-x86_64
+          # Build .deb
+          chmod +x installer/linux/build-deb.sh
+          bash installer/linux/build-deb.sh || true
+          cp dist/linux/*.deb dist/ 2>/dev/null || true
+
+      - name: Package (macOS)
+        if: matrix.os == 'macos-latest'
+        run: |
+          mkdir -p dist
+          cp target/release/rd-agent dist/rd-agent-macos-aarch64
+          cp target/release/rd-viewer dist/rd-viewer-macos-aarch64
+          cp target/release/rd-relay dist/rd-relay-macos-aarch64
+          # Build .dmg
+          chmod +x installer/macos/create-dmg.sh
+          bash installer/macos/create-dmg.sh || true
+          cp dist/macos/*.dmg dist/ 2>/dev/null || true
+
+      - name: Package (Windows)
+        if: matrix.os == 'windows-latest'
+        run: |
+          mkdir dist
+          copy target\release\rd-agent.exe dist\rd-agent-windows-x86_64.exe
+          copy target\release\rd-viewer.exe dist\rd-viewer-windows-x86_64.exe
+          copy target\release\rd-relay.exe dist\rd-relay-windows-x86_64.exe
+        shell: cmd
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.artifact }}
-          path: |
-            target/release/rd-agent${{ matrix.os == 'windows-latest' && '.exe' || '' }}
-            target/release/rd-viewer${{ matrix.os == 'windows-latest' && '.exe' || '' }}
-            target/release/rd-relay${{ matrix.os == 'windows-latest' && '.exe' || '' }}
+          name: ${{ matrix.platform }}-${{ matrix.arch }}
+          path: dist/*
 
+  # Create GitHub Release when a tag is pushed
   release:
     needs: build
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
+      - uses: actions/checkout@v4
+
       - name: Download all artifacts
         uses: actions/download-artifact@v4
+        with:
+          path: artifacts
 
-      - name: List artifacts
-        run: find . -type f | head -20
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "Remote Desktop ${{ github.ref_name }}"
+          body: |
+            ## Installation
+
+            ### Windows
+            Download `rd-agent-windows-x86_64.exe` and `rd-viewer-windows-x86_64.exe`, or run:
+            ```powershell
+            irm https://raw.githubusercontent.com/vdhushetty/RemoteDesktop/main/installer/install.ps1 | iex
+            ```
+
+            ### macOS
+            Download the `.dmg` file, open it, and drag both apps to Applications. Or run:
+            ```bash
+            curl -fsSL https://raw.githubusercontent.com/vdhushetty/RemoteDesktop/main/installer/install.sh | bash
+            ```
+
+            ### Linux
+            Download the `.deb` file and install with `sudo dpkg -i`, or run:
+            ```bash
+            curl -fsSL https://raw.githubusercontent.com/vdhushetty/RemoteDesktop/main/installer/install.sh | bash
+            ```
+
+            ## Quick Start
+            1. Run `rd-agent` on the machine you want to control
+            2. Note the Device ID it prints
+            3. Run `rd-viewer` on your machine
+            4. Paste the Device ID and click Connect
+          files: |
+            artifacts/**/*
+          draft: false
+          prerelease: false
