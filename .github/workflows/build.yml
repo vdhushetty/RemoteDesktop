@@ -20,10 +20,6 @@ jobs:
             target: x86_64-unknown-linux-gnu
             platform: linux
             arch: x86_64
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-            platform: windows
-            arch: x86_64
           - os: macos-latest
             target: aarch64-apple-darwin
             platform: macos
@@ -52,28 +48,9 @@ jobs:
         if: matrix.os == 'macos-latest'
         run: brew install libvpx protobuf opus pkg-config
 
-      - name: Install Windows dependencies
-        if: matrix.os == 'windows-latest'
-        run: |
-          choco install protoc pkgconfiglite -y
-          git clone https://github.com/microsoft/vcpkg.git C:\vcpkg
-          C:\vcpkg\bootstrap-vcpkg.bat
-          C:\vcpkg\vcpkg install libvpx:x64-windows-static opus:x64-windows-static
-        shell: cmd
-
       - name: Build release
         run: cargo build --release --bin rd-agent --bin rd-viewer --bin rd-relay
-        env:
-          VCPKG_ROOT: C:\vcpkg
-          VPX_LIB_DIR: C:\vcpkg\installed\x64-windows-static\lib
-          VPX_INCLUDE_DIR: C:\vcpkg\installed\x64-windows-static\include
-          VPX_STATIC: 1
-          OPUS_LIB_DIR: C:\vcpkg\installed\x64-windows-static\lib
-          OPUS_INCLUDE_DIR: C:\vcpkg\installed\x64-windows-static\include
-          OPUS_STATIC: 1
-          PKG_CONFIG_PATH: C:\vcpkg\installed\x64-windows-static\lib\pkgconfig
 
-      # Rename binaries with platform suffix
       - name: Package (Linux)
         if: matrix.os == 'ubuntu-latest'
         run: |
@@ -81,7 +58,6 @@ jobs:
           cp target/release/rd-agent dist/rd-agent-linux-x86_64
           cp target/release/rd-viewer dist/rd-viewer-linux-x86_64
           cp target/release/rd-relay dist/rd-relay-linux-x86_64
-          # Build .deb
           chmod +x installer/linux/build-deb.sh
           bash installer/linux/build-deb.sh || true
           cp dist/linux/*.deb dist/ 2>/dev/null || true
@@ -93,13 +69,55 @@ jobs:
           cp target/release/rd-agent dist/rd-agent-macos-aarch64
           cp target/release/rd-viewer dist/rd-viewer-macos-aarch64
           cp target/release/rd-relay dist/rd-relay-macos-aarch64
-          # Build .dmg
           chmod +x installer/macos/create-dmg.sh
           bash installer/macos/create-dmg.sh || true
           cp dist/macos/*.dmg dist/ 2>/dev/null || true
 
-      - name: Package (Windows)
-        if: matrix.os == 'windows-latest'
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.platform }}-${{ matrix.arch }}
+          path: dist/*
+
+  # Windows build (separate due to complex native deps)
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install LLVM
+        run: choco install llvm protoc -y
+
+      - name: Cache vcpkg
+        uses: actions/cache@v4
+        with:
+          path: C:\vcpkg\installed
+          key: vcpkg-windows-x64-static-v1
+
+      - name: Install vcpkg dependencies
+        run: |
+          if (-not (Test-Path "C:\vcpkg\installed\x64-windows-static\lib\vpx.lib")) {
+            cd C:\vcpkg
+            git pull 2>$null
+            .\bootstrap-vcpkg.bat
+            .\vcpkg install libvpx:x64-windows-static opus:x64-windows-static
+          }
+        shell: pwsh
+
+      - name: Build release
+        run: cargo build --release --bin rd-agent --bin rd-viewer --bin rd-relay
+        env:
+          VPX_LIB_DIR: C:\vcpkg\installed\x64-windows-static\lib
+          VPX_INCLUDE_DIR: C:\vcpkg\installed\x64-windows-static\include
+          VPX_VERSION: "1.13.0"
+          VPX_STATIC: "1"
+          VPX_NO_PKG_CONFIG: "1"
+          LIBCLANG_PATH: "C:\\Program Files\\LLVM\\lib"
+
+      - name: Package
         run: |
           mkdir dist
           copy target\release\rd-agent.exe dist\rd-agent-windows-x86_64.exe
@@ -110,12 +128,12 @@ jobs:
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.platform }}-${{ matrix.arch }}
+          name: windows-x86_64
           path: dist/*
 
   # Create GitHub Release when a tag is pushed
   release:
-    needs: build
+    needs: [build, build-windows]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     permissions:
@@ -142,13 +160,13 @@ jobs:
             ```
 
             ### macOS
-            Download the `.dmg` file, open it, and drag both apps to Applications. Or run:
+            Download the `.dmg`, or run:
             ```bash
             curl -fsSL https://raw.githubusercontent.com/vdhushetty/RemoteDesktop/main/installer/install.sh | bash
             ```
 
             ### Linux
-            Download the `.deb` file and install with `sudo dpkg -i`, or run:
+            Download the `.deb` or binaries, or run:
             ```bash
             curl -fsSL https://raw.githubusercontent.com/vdhushetty/RemoteDesktop/main/installer/install.sh | bash
             ```
