@@ -272,18 +272,24 @@ impl eframe::App for App {
                         // Connect to remote section
                         ui.group(|ui| {
                             ui.label("Connect to remote machine:");
-                            ui.horizontal(|ui| {
-                                let te = ui.text_edit_singleline(&mut self.connect_target);
-                                if te.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) && !self.connect_target.is_empty() {
-                                    let target = self.connect_target.trim().to_string();
-                                    self.connect(target, ctx.clone());
-                                }
-                                if ui.button("Connect").clicked() && !self.connect_target.is_empty() {
-                                    let target = self.connect_target.trim().to_string();
-                                    self.connect(target, ctx.clone());
-                                }
-                            });
-                            ui.label(egui::RichText::new("Paste a Connection Code or IP address").small().weak());
+                            ui.add_space(3.0);
+                            // Use multiline text edit so long codes wrap instead of pushing button off screen
+                            let te = ui.add(
+                                egui::TextEdit::multiline(&mut self.connect_target)
+                                    .desired_rows(2)
+                                    .desired_width(ui.available_width())
+                                    .hint_text("Paste a Connection Code or IP address")
+                            );
+                            if te.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) && !self.connect_target.is_empty() {
+                                let target = self.connect_target.trim().to_string();
+                                self.connect_target = target.clone();
+                                self.connect(target, ctx.clone());
+                            }
+                            ui.add_space(3.0);
+                            if ui.add_sized([ui.available_width(), 30.0], egui::Button::new("Connect")).clicked() && !self.connect_target.is_empty() {
+                                let target = self.connect_target.trim().to_string();
+                                self.connect(target, ctx.clone());
+                            }
                         });
 
                         ui.add_space(15.0);
