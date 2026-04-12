@@ -28,30 +28,19 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
-
-      - name: Cache Cargo registry
+      - name: Cache Cargo
         uses: actions/cache@v4
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-          key: ${{ matrix.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ matrix.os }}-cargo-registry-
-
-      - name: Cache Cargo build
-        uses: actions/cache@v4
-        with:
-          path: target
-          key: ${{ matrix.os }}-${{ matrix.target }}-cargo-build-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ matrix.os }}-${{ matrix.target }}-cargo-build-
-            ${{ matrix.os }}-${{ matrix.target }}-cargo-
+            target
+          key: ${{ matrix.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ matrix.os }}-cargo-
 
       - name: Install Linux dependencies
         if: matrix.os == 'ubuntu-latest'
@@ -68,16 +57,16 @@ jobs:
         if: matrix.os == 'macos-latest'
         run: brew install libvpx protobuf opus pkg-config
 
-      - name: Build release
-        run: cargo build --release --bin rd-agent --bin rd-viewer --bin rd-relay
+      - name: Build
+        run: cargo build --release --bin rd-desktop --bin rd-agent --bin rd-viewer --bin rd-relay
 
       - name: Package (Linux)
         if: matrix.os == 'ubuntu-latest'
         run: |
           mkdir -p dist
+          cp target/release/rd-desktop dist/RemoteDesktop-linux-x86_64
           cp target/release/rd-agent dist/rd-agent-linux-x86_64
           cp target/release/rd-viewer dist/rd-viewer-linux-x86_64
-          cp target/release/rd-relay dist/rd-relay-linux-x86_64
           chmod +x installer/linux/build-deb.sh
           bash installer/linux/build-deb.sh || true
           cp dist/linux/*.deb dist/ 2>/dev/null || true
@@ -86,9 +75,7 @@ jobs:
         if: matrix.os == 'macos-latest'
         run: |
           mkdir -p dist
-          cp target/release/rd-agent dist/rd-agent-macos-aarch64
-          cp target/release/rd-viewer dist/rd-viewer-macos-aarch64
-          cp target/release/rd-relay dist/rd-relay-macos-aarch64
+          cp target/release/rd-desktop dist/RemoteDesktop-macos-aarch64
           chmod +x installer/macos/create-dmg.sh
           bash installer/macos/create-dmg.sh || true
           cp dist/macos/*.dmg dist/ 2>/dev/null || true
@@ -99,43 +86,28 @@ jobs:
           name: ${{ matrix.platform }}-${{ matrix.arch }}
           path: dist/*
 
-  # Windows build (separate due to complex native deps)
   build-windows:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache Cargo registry
+      - name: Cache Cargo
         uses: actions/cache@v4
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-          key: windows-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            windows-cargo-registry-
-
-      - name: Cache Cargo build
-        uses: actions/cache@v4
-        with:
-          path: target
-          key: windows-x86_64-cargo-build-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            windows-x86_64-cargo-build-
-            windows-x86_64-cargo-
-
+            target
+          key: windows-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: windows-cargo-
       - name: Install LLVM
         run: choco install llvm protoc -y
-
       - name: Cache vcpkg
         uses: actions/cache@v4
         with:
           path: C:\vcpkg\installed
-          key: vcpkg-windows-x64-static-v1
-
+          key: vcpkg-windows-x64-static-v2
       - name: Install vcpkg dependencies
         run: |
           if (-not (Test-Path "C:\vcpkg\installed\x64-windows-static\lib\vpx.lib")) {
@@ -144,15 +116,13 @@ jobs:
             .\bootstrap-vcpkg.bat
             .\vcpkg install libvpx:x64-windows-static opus:x64-windows-static
           }
-          # env-libvpx-sys looks for 'libvpx' but vcpkg names it 'vpx'
           $libDir = "C:\vcpkg\installed\x64-windows-static\lib"
           if ((Test-Path "$libDir\vpx.lib") -and -not (Test-Path "$libDir\libvpx.lib")) {
             Copy-Item "$libDir\vpx.lib" "$libDir\libvpx.lib"
           }
         shell: pwsh
-
-      - name: Build release
-        run: cargo build --release --bin rd-agent --bin rd-viewer --bin rd-relay
+      - name: Build
+        run: cargo build --release --bin rd-desktop --bin rd-agent --bin rd-viewer --bin rd-relay
         env:
           VPX_LIB_DIR: C:\vcpkg\installed\x64-windows-static\lib
           VPX_INCLUDE_DIR: C:\vcpkg\installed\x64-windows-static\include
@@ -160,22 +130,19 @@ jobs:
           VPX_STATIC: "1"
           VPX_NO_PKG_CONFIG: "1"
           LIBCLANG_PATH: "C:\\Program Files\\LLVM\\lib"
-
       - name: Package
         run: |
           mkdir dist
+          copy target\release\rd-desktop.exe dist\RemoteDesktop-windows-x86_64.exe
           copy target\release\rd-agent.exe dist\rd-agent-windows-x86_64.exe
           copy target\release\rd-viewer.exe dist\rd-viewer-windows-x86_64.exe
-          copy target\release\rd-relay.exe dist\rd-relay-windows-x86_64.exe
         shell: cmd
-
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: windows-x86_64
           path: dist/*
 
-  # Create GitHub Release when a tag is pushed
   release:
     needs: [build, build-windows]
     if: startsWith(github.ref, 'refs/tags/v')
@@ -184,42 +151,42 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
-
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
           path: artifacts
-
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
           name: "Remote Desktop ${{ github.ref_name }}"
           body: |
-            ## Installation
+            ## Download
 
-            ### Windows
-            Download `rd-agent-windows-x86_64.exe` and `rd-viewer-windows-x86_64.exe`, or run:
+            | Platform | File |
+            |----------|------|
+            | **Windows** | `RemoteDesktop-windows-x86_64.exe` |
+            | **macOS** | `RemoteDesktop-0.1.0-macOS.dmg` |
+            | **Linux** | `RemoteDesktop-linux-x86_64` or `remote-desktop_0.1.0_amd64.deb` |
+
+            ## Install
+
+            **Windows**: Download the `.exe` and run it. Or:
             ```powershell
             irm https://raw.githubusercontent.com/vdhushetty/RemoteDesktop/main/installer/install.ps1 | iex
             ```
 
-            ### macOS
-            Download the `.dmg`, or run:
+            **macOS**: Download the `.dmg`, open it, drag to Applications.
+
+            **Linux**: Download the `.deb` and `sudo dpkg -i` it, or:
             ```bash
             curl -fsSL https://raw.githubusercontent.com/vdhushetty/RemoteDesktop/main/installer/install.sh | bash
             ```
 
-            ### Linux
-            Download the `.deb` or binaries, or run:
-            ```bash
-            curl -fsSL https://raw.githubusercontent.com/vdhushetty/RemoteDesktop/main/installer/install.sh | bash
-            ```
-
-            ## Quick Start
-            1. Run `rd-agent` on the machine you want to control
-            2. Note the Device ID it prints
-            3. Run `rd-viewer` on your machine
-            4. Paste the Device ID and click Connect
+            ## Usage
+            1. Run **Remote Desktop** on both machines
+            2. Copy the **Device ID** from the machine you want to control
+            3. Paste it in the **Connect** field on the other machine
+            4. Click **Connect**
           files: |
             artifacts/**/*
           draft: false
