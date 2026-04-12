@@ -7,19 +7,4 @@ edition.workspace = true
 anyhow = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
-
-[target.'cfg(target_os = "macos")'.dependencies]
-core-graphics = "0.24"
-core-foundation = "0.10"
-
-[target.'cfg(target_os = "windows")'.dependencies]
-windows = { version = "0.61", features = [
-    "Win32_Graphics_Dxgi",
-    "Win32_Graphics_Dxgi_Common",
-    "Win32_Graphics_Direct3D11",
-    "Win32_Graphics_Direct3D",
-] }
-
-[target.'cfg(target_os = "linux")'.dependencies]
-x11rb = { version = "0.13", features = ["shm"] }
-libc = "0.2"
+xcap = "0.9"
