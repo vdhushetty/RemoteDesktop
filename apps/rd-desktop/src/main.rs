@@ -60,7 +60,10 @@ struct SharedState {
     connection_ticket: String,
     device_name: String,
     agent_ready: bool,
-    incoming_session: Option<String>, // remote name of someone connecting to us
+    incoming_session: Option<String>,
+
+    // Shared iroh endpoint (used by both agent and viewer)
+    iroh: Option<Arc<IrohTransport>>,
 
     // Viewer/session state
     frame: Option<DecodedFrame>,
@@ -98,6 +101,7 @@ impl App {
             device_name: String::new(),
             agent_ready: false,
             incoming_session: None,
+            iroh: None,
             frame: None,
             status: ConnectionStatus::Disconnected,
             discovered_devices: vec![],
@@ -377,12 +381,13 @@ async fn start_agent_services(state: Arc<Mutex<SharedState>>) -> Result<()> {
     let identity = DeviceIdentity::load_or_create(None)?;
     let iroh = Arc::new(IrohTransport::new(identity.clone()).await?);
 
-    // Update UI with device info
+    // Update UI with device info + store iroh for outgoing connections
     {
         let mut s = state.lock().unwrap();
         s.device_id = iroh.device_id();
         s.connection_ticket = iroh.connection_ticket();
         s.device_name = identity.device_name().to_string();
+        s.iroh = Some(iroh.clone());
         s.agent_ready = true;
     }
 
@@ -612,8 +617,11 @@ async fn connect_lan(addr: SocketAddr, state: Arc<Mutex<SharedState>>, ctx: egui
 }
 
 async fn connect_internet(target: String, state: Arc<Mutex<SharedState>>, ctx: egui::Context) -> Result<()> {
-    let identity = DeviceIdentity::load_or_create(None)?;
-    let iroh = IrohTransport::new(identity).await?;
+    // Reuse the agent's iroh endpoint — don't create a second one
+    let iroh = {
+        let s = state.lock().unwrap();
+        s.iroh.clone().ok_or_else(|| anyhow::anyhow!("Agent not ready yet, wait a moment"))?
+    };
 
     // Try as connection ticket first, then as raw device ID
     let conn = if rd_net::iroh_transport::is_connection_ticket(&target) {
