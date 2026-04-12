@@ -57,6 +57,7 @@ enum QueuedInput {
 struct SharedState {
     // Agent state
     device_id: String,
+    connection_ticket: String,
     device_name: String,
     agent_ready: bool,
     incoming_session: Option<String>, // remote name of someone connecting to us
@@ -93,6 +94,7 @@ impl App {
     fn new(_cc: &eframe::CreationContext) -> Self {
         let state = Arc::new(Mutex::new(SharedState {
             device_id: "loading...".into(),
+            connection_ticket: String::new(),
             device_name: String::new(),
             agent_ready: false,
             incoming_session: None,
@@ -130,14 +132,17 @@ impl App {
 
         self.runtime.spawn(async move {
             let result: Result<()> = async {
-                if target.contains(':') || target.parse::<std::net::IpAddr>().is_ok() {
-                    let addr = if target.contains(':') {
-                        target.parse::<SocketAddr>().map_err(|e| anyhow::anyhow!("{e}"))?
-                    } else {
-                        SocketAddr::new(target.parse().map_err(|e| anyhow::anyhow!("{e}"))?, DEFAULT_PORT)
-                    };
+                // Auto-detect: IP address vs connection ticket
+                if target.contains(':') && target.parse::<SocketAddr>().is_ok() {
+                    // IP:port — direct LAN
+                    let addr: SocketAddr = target.parse().map_err(|e| anyhow::anyhow!("{e}"))?;
+                    connect_lan(addr, state.clone(), ctx.clone()).await
+                } else if target.parse::<std::net::IpAddr>().is_ok() {
+                    // IP without port — LAN with default port
+                    let addr = SocketAddr::new(target.parse().map_err(|e| anyhow::anyhow!("{e}"))?, DEFAULT_PORT);
                     connect_lan(addr, state.clone(), ctx.clone()).await
                 } else {
+                    // Connection ticket (base64) or device ID (hex)
                     connect_internet(target, state.clone(), ctx.clone()).await
                 }
             }.await;
@@ -206,9 +211,9 @@ impl App {
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        let (status, device_id, device_name, agent_ready, devices, rtt, transfer_progress) = {
+        let (status, connection_ticket, device_name, agent_ready, devices, rtt, transfer_progress) = {
             let s = self.state.lock().unwrap();
-            (s.status.clone(), s.device_id.clone(), s.device_name.clone(),
+            (s.status.clone(), s.connection_ticket.clone(), s.device_name.clone(),
              s.agent_ready, s.discovered_devices.clone(), s.rtt_us, s.transfer_progress)
         };
 
@@ -221,17 +226,27 @@ impl eframe::App for App {
                         ui.heading("Remote Desktop");
                         ui.add_space(20.0);
 
-                        // Your Device ID section
+                        // Your connection ticket section
                         ui.group(|ui| {
-                            ui.label("Your Device ID (share this to let others connect):");
+                            ui.label("Your Connection Code (share this to let others connect):");
                             ui.add_space(5.0);
-                            ui.horizontal(|ui| {
-                                let id_text = if agent_ready { &device_id } else { "Starting..." };
-                                ui.monospace(id_text);
-                                if agent_ready && ui.button("Copy").clicked() {
-                                    ui.output_mut(|o| o.copied_text = device_id.clone());
-                                }
-                            });
+                            if agent_ready {
+                                // Show a truncated ticket with copy button
+                                ui.horizontal(|ui| {
+                                    let short = if connection_ticket.len() > 40 {
+                                        format!("{}...", &connection_ticket[..40])
+                                    } else {
+                                        connection_ticket.clone()
+                                    };
+                                    ui.monospace(&short);
+                                    if ui.button("Copy").clicked() {
+                                        ui.output_mut(|o| o.copied_text = connection_ticket.clone());
+                                    }
+                                });
+                            } else {
+                                ui.label("Starting...");
+                                ui.spinner();
+                            }
                             if !device_name.is_empty() {
                                 ui.label(format!("Device: {device_name}"));
                             }
@@ -268,7 +283,7 @@ impl eframe::App for App {
                                     self.connect(target, ctx.clone());
                                 }
                             });
-                            ui.label(egui::RichText::new("Enter a Device ID or IP address").small().weak());
+                            ui.label(egui::RichText::new("Paste a Connection Code or IP address").small().weak());
                         });
 
                         ui.add_space(15.0);
@@ -360,6 +375,7 @@ async fn start_agent_services(state: Arc<Mutex<SharedState>>) -> Result<()> {
     {
         let mut s = state.lock().unwrap();
         s.device_id = iroh.device_id();
+        s.connection_ticket = iroh.connection_ticket();
         s.device_name = identity.device_name().to_string();
         s.agent_ready = true;
     }
@@ -589,11 +605,19 @@ async fn connect_lan(addr: SocketAddr, state: Arc<Mutex<SharedState>>, ctx: egui
         MessageReceiver::new(vr), ar.map(MessageReceiver::new), state, ctx).await
 }
 
-async fn connect_internet(device_id: String, state: Arc<Mutex<SharedState>>, ctx: egui::Context) -> Result<()> {
+async fn connect_internet(target: String, state: Arc<Mutex<SharedState>>, ctx: egui::Context) -> Result<()> {
     let identity = DeviceIdentity::load_or_create(None)?;
     let iroh = IrohTransport::new(identity).await?;
-    let node_id = rd_net::iroh_transport::parse_device_id(&device_id)?;
-    let conn = iroh.connect_by_id(node_id).await?;
+
+    // Try as connection ticket first, then as raw device ID
+    let conn = if rd_net::iroh_transport::is_connection_ticket(&target) {
+        tracing::info!("connecting via connection ticket");
+        iroh.connect_by_ticket(&target).await?
+    } else {
+        tracing::info!("connecting via device ID (discovery)");
+        let node_id = rd_net::iroh_transport::parse_device_id(&target)?;
+        iroh.connect_by_id(node_id).await?
+    };
     let (cs, cr) = conn.open_bi().await.map_err(|e| anyhow::anyhow!("{e}"))?;
     let (is, _) = conn.open_bi().await.map_err(|e| anyhow::anyhow!("{e}"))?;
     let vr = conn.accept_uni().await.map_err(|e| anyhow::anyhow!("{e}"))?;
