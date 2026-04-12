@@ -13,6 +13,7 @@ env:
 jobs:
   build:
     strategy:
+      fail-fast: false
       matrix:
         include:
           - os: ubuntu-latest
@@ -43,7 +44,9 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libvpx-dev libx11-dev libxcb1-dev \
             libxcb-shm0-dev pkg-config libasound2-dev libopus-dev \
-            protobuf-compiler libclang-dev dpkg
+            protobuf-compiler libclang-dev dpkg \
+            libglib2.0-dev libgtk-3-dev libxdo-dev \
+            libxkbcommon-dev libwayland-dev
 
       - name: Install macOS dependencies
         if: matrix.os == 'macos-latest'
