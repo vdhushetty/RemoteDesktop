@@ -11,6 +11,7 @@ members = [
     "crates/rd-audio",
     "apps/rd-agent",
     "apps/rd-viewer",
+    "apps/rd-desktop",
     "apps/rd-relay",
     "tools/rd-smoke-test",
 ]
