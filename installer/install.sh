@@ -67,7 +67,9 @@ build_from_source() {
             sudo apt-get update -qq
             sudo apt-get install -y -qq build-essential pkg-config libvpx-dev \
                 libx11-dev libxcb1-dev libxcb-shm0-dev libopus-dev \
-                protobuf-compiler libasound2-dev libclang-dev
+                protobuf-compiler libasound2-dev libclang-dev \
+                libglib2.0-dev libgtk-3-dev libxdo-dev libxkbcommon-dev \
+                libwayland-dev libpipewire-0.3-dev libdbus-1-dev
         elif command -v dnf &>/dev/null; then
             sudo dnf install -y gcc pkg-config libvpx-devel libX11-devel \
                 libxcb-devel opus-devel protobuf-compiler alsa-lib-devel clang-devel
