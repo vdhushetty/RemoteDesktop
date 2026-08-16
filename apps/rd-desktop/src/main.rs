@@ -74,6 +74,7 @@ struct SharedState {
     remote_screen: (u32, u32),
     file_to_send: Option<std::path::PathBuf>,
     transfer_progress: Option<f64>,
+    connect_started: Option<std::time::Instant>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -110,6 +111,7 @@ impl App {
             remote_screen: (1920, 1080),
             file_to_send: None,
             transfer_progress: None,
+            connect_started: None,
         }));
 
         let runtime = tokio::runtime::Runtime::new().expect("tokio runtime");
@@ -132,7 +134,11 @@ impl App {
 
     fn connect(&mut self, target: String, ctx: egui::Context) {
         let state = self.state.clone();
-        state.lock().unwrap().status = ConnectionStatus::Connecting;
+        {
+            let mut s = state.lock().unwrap();
+            s.status = ConnectionStatus::Connecting;
+            s.connect_started = Some(std::time::Instant::now());
+        }
 
         self.runtime.spawn(async move {
             let result: Result<()> = async {
@@ -215,10 +221,10 @@ impl App {
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        let (status, connection_ticket, device_name, agent_ready, devices, rtt, transfer_progress) = {
+        let (status, connection_ticket, device_name, agent_ready, devices, rtt, transfer_progress, connect_started) = {
             let s = self.state.lock().unwrap();
             (s.status.clone(), s.connection_ticket.clone(), s.device_name.clone(),
-             s.agent_ready, s.discovered_devices.clone(), s.rtt_us, s.transfer_progress)
+             s.agent_ready, s.discovered_devices.clone(), s.rtt_us, s.transfer_progress, s.connect_started)
         };
 
         match status {
@@ -264,13 +270,20 @@ impl eframe::App for App {
                             ui.add_space(5.0);
                         }
 
-                        // Connecting spinner
+                        // Connecting spinner with elapsed time and cancel
                         if status == ConnectionStatus::Connecting {
                             ui.horizontal(|ui| {
                                 ui.spinner();
-                                ui.label("Connecting...");
+                                let elapsed = connect_started.map(|t| t.elapsed().as_secs()).unwrap_or(0);
+                                ui.label(format!("Connecting... ({elapsed}s)"));
+                                if ui.button("Cancel").clicked() {
+                                    let mut s = self.state.lock().unwrap();
+                                    s.status = ConnectionStatus::Disconnected;
+                                    s.connect_started = None;
+                                }
                             });
                             ui.add_space(5.0);
+                            ctx.request_repaint_after(Duration::from_secs(1));
                         }
 
                         // Connect to remote section
@@ -414,6 +427,9 @@ async fn start_agent_services(state: Arc<Mutex<SharedState>>) -> Result<()> {
     });
 
     // Iroh accept loop (incoming internet connections)
+    // Note: we use std::thread::spawn because serve_session creates Encoder/ScreenCapturer
+    // which are not Send (raw VPX pointers). Each connection gets its own single-threaded
+    // tokio runtime to isolate these non-Send types.
     let iroh_clone = iroh.clone();
     tokio::spawn(async move {
         loop {
@@ -457,53 +473,67 @@ async fn start_agent_services(state: Arc<Mutex<SharedState>>) -> Result<()> {
 
 // ── Incoming connections (this machine is being controlled) ──
 
+/// Handle an incoming iroh connection: perform handshake, then serve the session.
+/// The handshake is done here (not in serve_session) because QUIC streams are lazy —
+/// we must send actual data on uni-streams before the viewer's accept_uni() returns.
 async fn handle_incoming_iroh(conn: iroh::endpoint::Connection) -> Result<()> {
-    let (ctrl_s, ctrl_r) = conn.accept_bi().await?;
-    let video_s = conn.open_uni().await?;
-    let audio_s = conn.open_uni().await?;
-    let input = conn.accept_bi().await.ok();
-    serve_session(
-        MessageSender::new(ctrl_s), MessageReceiver::new(ctrl_r),
-        MessageSender::new(video_s), MessageSender::new(audio_s),
-        input.map(|(_, r)| MessageReceiver::new(r)),
-    ).await
+    let (ctrl_s, ctrl_r, video_send, audio_send, input_recv, capturer, encoder, width, height) =
+        setup_incoming_session(
+            || async { Ok(conn.accept_bi().await?) },
+            || async { Ok(conn.open_uni().await?) },
+            || async { conn.accept_bi().await.ok() },
+        ).await?;
+    serve_session(ctrl_s, ctrl_r, video_send, audio_send, input_recv, capturer, encoder, width, height).await
 }
 
+/// Handle an incoming LAN connection: perform handshake, then serve the session.
 async fn handle_incoming_lan(conn: quinn::Connection) -> Result<()> {
-    let (ctrl_s, ctrl_r) = conn.accept_bi().await?;
-    let video_s = conn.open_uni().await?;
-    let audio_s = conn.open_uni().await?;
-    let input = conn.accept_bi().await.ok();
-    serve_session(
-        MessageSender::new(ctrl_s), MessageReceiver::new(ctrl_r),
-        MessageSender::new(video_s), MessageSender::new(audio_s),
-        input.map(|(_, r)| MessageReceiver::new(r)),
-    ).await
+    let (ctrl_s, ctrl_r, video_send, audio_send, input_recv, capturer, encoder, width, height) =
+        setup_incoming_session(
+            || async { conn.accept_bi().await.map_err(|e| anyhow::anyhow!("{e}")) },
+            || async { conn.open_uni().await.map_err(|e| anyhow::anyhow!("{e}")) },
+            || async { conn.accept_bi().await.ok() },
+        ).await?;
+    serve_session(ctrl_s, ctrl_r, video_send, audio_send, input_recv, capturer, encoder, width, height).await
 }
 
-/// Serve a remote session: capture screen, encode, stream, handle input
-async fn serve_session<W, R>(
-    mut ctrl_send: MessageSender<W>,
-    mut ctrl_recv: MessageReceiver<R>,
-    mut video_send: MessageSender<W>,
-    mut audio_send: MessageSender<W>,
-    input_recv: Option<MessageReceiver<R>>,
-) -> Result<()>
+/// Common setup for incoming connections (iroh or LAN).
+/// Performs the handshake and opens streams with first-frame data so the viewer's
+/// accept_uni() calls don't deadlock.
+async fn setup_incoming_session<W, R, AcceptBi, AcceptBiFut, OpenUni, OpenUniFut, AcceptBi2, AcceptBi2Fut>(
+    accept_bi: AcceptBi,
+    open_uni: OpenUni,
+    accept_bi_input: AcceptBi2,
+) -> Result<(MessageSender<W>, MessageReceiver<R>, MessageSender<W>, MessageSender<W>, Option<MessageReceiver<R>>, rd_capture::ScreenCapturer, Encoder, u32, u32)>
 where
     W: AsyncWrite + Unpin + Send + 'static,
     R: AsyncRead + Unpin + Send + 'static,
+    AcceptBi: FnOnce() -> AcceptBiFut,
+    AcceptBiFut: std::future::Future<Output = Result<(W, R)>>,
+    OpenUni: Fn() -> OpenUniFut,
+    OpenUniFut: std::future::Future<Output = Result<W>>,
+    AcceptBi2: FnOnce() -> AcceptBi2Fut,
+    AcceptBi2Fut: std::future::Future<Output = Option<(W, R)>>,
 {
-    // Handshake
+    // 1. Accept control bi-stream (returns when viewer sends SessionInit)
+    let (ctrl_s, ctrl_r) = accept_bi().await?;
+    let mut ctrl_send = MessageSender::new(ctrl_s);
+    let mut ctrl_recv = MessageReceiver::new(ctrl_r);
+
+    // 2. Receive SessionInit
     let init_msg = ctrl_recv.recv().await.map_err(|e| anyhow::anyhow!("recv init: {e}"))?;
-    if let Some(messages::message::Payload::SessionInit(init)) = &init_msg.payload {
+    if let Some(messages::message::Payload::SessionInit(ref init)) = init_msg.payload {
         tracing::info!(device = %init.device_name, os = %init.os, "serving remote session");
     }
 
+    // 3. Set up capturer + encoder
     let mut capturer = rd_capture::create_capturer()?;
     let first_frame = capturer.capture_frame()?;
     let width = first_frame.width & !1;
     let height = first_frame.height & !1;
+    let mut encoder = Encoder::new(CodecConfig { width, height, fps: TARGET_FPS, bitrate_kbps: 4000 })?;
 
+    // 4. Send SessionAccept
     ctrl_send.send(&messages::Message {
         sequence: 1, timestamp_us: rd_protocol::now_us(),
         payload: Some(messages::message::Payload::SessionAccept(messages::SessionAccept {
@@ -513,7 +543,64 @@ where
         })),
     }).await.map_err(|e| anyhow::anyhow!("send accept: {e}"))?;
 
-    let mut encoder = Encoder::new(CodecConfig { width, height, fps: TARGET_FPS, bitrate_kbps: 4000 })?;
+    // 5. Open video uni-stream and send first frame immediately.
+    //    This is critical: QUIC streams are lazy, so the viewer's accept_uni() won't
+    //    return until we actually write data on this stream.
+    let video_w = open_uni().await?;
+    let mut video_send = MessageSender::new(video_w);
+    let (y, u, v) = first_frame.to_i420();
+    let encoded = encoder.encode(&y, &u, &v)?;
+    for ef in &encoded {
+        let msg = rd_protocol::video_frame_message(0, 0, messages::Codec::Vp9, ef.is_keyframe, ef.width, ef.height, ef.data.clone());
+        video_send.send(&msg).await.map_err(|e| anyhow::anyhow!("send first video: {e}"))?;
+    }
+    tracing::info!("sent first video frame on uni-stream");
+
+    // 6. Open audio uni-stream and send an initial frame to make stream visible
+    let audio_w = open_uni().await?;
+    let mut audio_send = MessageSender::new(audio_w);
+    audio_send.send(&messages::Message {
+        sequence: 0, timestamp_us: rd_protocol::now_us(),
+        payload: Some(messages::message::Payload::AudioFrame(messages::AudioFrame {
+            opus_data: vec![], sample_rate: 48000, channels: 2,
+        })),
+    }).await.map_err(|e| anyhow::anyhow!("send initial audio: {e}"))?;
+
+    // 7. Accept input bi-stream (viewer opens it after receiving SessionAccept)
+    let input = tokio::time::timeout(Duration::from_secs(5), accept_bi_input())
+        .await.ok().flatten();
+
+    Ok((ctrl_send, ctrl_recv, video_send, audio_send,
+        input.map(|(_, r)| MessageReceiver::new(r)), capturer, encoder, width, height))
+}
+
+/// Serve a remote session: capture screen, encode, stream, handle input.
+/// Handshake and capturer/encoder setup are already done by the handler.
+async fn serve_session<W, R>(
+    mut ctrl_send: MessageSender<W>,
+    ctrl_recv: MessageReceiver<R>,
+    mut video_send: MessageSender<W>,
+    mut audio_send: MessageSender<W>,
+    input_recv: Option<MessageReceiver<R>>,
+    mut capturer: rd_capture::ScreenCapturer,
+    mut encoder: Encoder,
+    width: u32,
+    height: u32,
+) -> Result<()>
+where
+    W: AsyncWrite + Unpin + Send + 'static,
+    R: AsyncRead + Unpin + Send + 'static,
+{
+    // Heartbeat receiver (control stream already has SessionInit consumed by handler)
+    tokio::spawn(async move {
+        let mut ctrl_recv = ctrl_recv;
+        loop {
+            match ctrl_recv.recv().await {
+                Ok(_) => {} // heartbeat or other control messages
+                Err(_) => break,
+            }
+        }
+    });
 
     // Input handler
     if let Some(mut recv) = input_recv {
@@ -608,11 +695,35 @@ where
 async fn connect_lan(addr: SocketAddr, state: Arc<Mutex<SharedState>>, ctx: egui::Context) -> Result<()> {
     let client = rd_net::QuicClient::new()?;
     let conn = client.connect(addr).await?;
+
+    // Open control stream and send SessionInit IMMEDIATELY (QUIC streams are lazy —
+    // accept_bi on the remote side won't return until we actually send data)
     let (cs, cr) = conn.open_bi().await.map_err(|e| anyhow::anyhow!("{e}"))?;
+    let mut ctrl_send = MessageSender::new(cs);
+    let mut ctrl_recv = MessageReceiver::new(cr);
+
+    tracing::info!("sending SessionInit");
+    ctrl_send.send(&session_init_message()).await.map_err(|e| anyhow::anyhow!("send init: {e}"))?;
+
+    // Wait for SessionAccept (agent sets up capturer and responds)
+    let accept_msg = ctrl_recv.recv().await.map_err(|e| anyhow::anyhow!("recv accept: {e}"))?;
+    let remote_name = extract_remote_name(&accept_msg);
+    tracing::info!(remote = %remote_name, "session accepted");
+
+    // Accept video/audio uni-streams (agent has now sent first frames on them)
+    let vr = tokio::time::timeout(Duration::from_secs(10), conn.accept_uni())
+        .await.map_err(|_| anyhow::anyhow!("Timed out waiting for video stream from remote"))?.map_err(|e| anyhow::anyhow!("{e}"))?;
+    let ar = tokio::time::timeout(Duration::from_secs(5), conn.accept_uni())
+        .await.ok().and_then(|r| r.ok());
+
+    // Open input bi-stream
     let (is, _) = conn.open_bi().await.map_err(|e| anyhow::anyhow!("{e}"))?;
-    let vr = conn.accept_uni().await.map_err(|e| anyhow::anyhow!("{e}"))?;
-    let ar = conn.accept_uni().await.ok();
-    view_session(MessageSender::new(cs), MessageReceiver::new(cr), MessageSender::new(is),
+
+    // Update status
+    state.lock().unwrap().status = ConnectionStatus::Connected { remote_name };
+    ctx.request_repaint();
+
+    view_session(ctrl_send, ctrl_recv, MessageSender::new(is),
         MessageReceiver::new(vr), ar.map(MessageReceiver::new), state, ctx).await
 }
 
@@ -632,18 +743,64 @@ async fn connect_internet(target: String, state: Arc<Mutex<SharedState>>, ctx: e
         let node_id = rd_net::iroh_transport::parse_device_id(&target)?;
         iroh.connect_by_id(node_id).await?
     };
+
+    // Open control stream and send SessionInit IMMEDIATELY (QUIC streams are lazy —
+    // accept_bi on the remote side won't return until we actually send data)
     let (cs, cr) = conn.open_bi().await.map_err(|e| anyhow::anyhow!("{e}"))?;
+    let mut ctrl_send = MessageSender::new(cs);
+    let mut ctrl_recv = MessageReceiver::new(cr);
+
+    tracing::info!("sending SessionInit");
+    ctrl_send.send(&session_init_message()).await.map_err(|e| anyhow::anyhow!("send init: {e}"))?;
+
+    // Wait for SessionAccept (agent sets up capturer and responds)
+    let accept_msg = ctrl_recv.recv().await.map_err(|e| anyhow::anyhow!("recv accept: {e}"))?;
+    let remote_name = extract_remote_name(&accept_msg);
+    tracing::info!(remote = %remote_name, "session accepted");
+
+    // Accept video/audio uni-streams (agent has now sent first frames on them)
+    let vr = tokio::time::timeout(Duration::from_secs(10), conn.accept_uni())
+        .await.map_err(|_| anyhow::anyhow!("Timed out waiting for video stream from remote"))?.map_err(|e| anyhow::anyhow!("{e}"))?;
+    let ar = tokio::time::timeout(Duration::from_secs(5), conn.accept_uni())
+        .await.ok().and_then(|r| r.ok());
+
+    // Open input bi-stream
     let (is, _) = conn.open_bi().await.map_err(|e| anyhow::anyhow!("{e}"))?;
-    let vr = conn.accept_uni().await.map_err(|e| anyhow::anyhow!("{e}"))?;
-    let ar = conn.accept_uni().await.ok();
-    view_session(MessageSender::new(cs), MessageReceiver::new(cr), MessageSender::new(is),
+
+    // Update status
+    state.lock().unwrap().status = ConnectionStatus::Connected { remote_name };
+    ctx.request_repaint();
+
+    view_session(ctrl_send, ctrl_recv, MessageSender::new(is),
         MessageReceiver::new(vr), ar.map(MessageReceiver::new), state, ctx).await
 }
 
-/// View a remote session: decode video, send input, play audio
+/// Build the SessionInit message for this device
+fn session_init_message() -> messages::Message {
+    messages::Message {
+        sequence: 0, timestamp_us: rd_protocol::now_us(),
+        payload: Some(messages::message::Payload::SessionInit(messages::SessionInit {
+            device_name: hostname::get().map(|h| h.to_string_lossy().to_string()).unwrap_or_default(),
+            os: std::env::consts::OS.to_string(), screen_width: 1920, screen_height: 1080,
+            codecs: vec![messages::CodecCapability { codec: messages::Codec::Vp9.into(), hardware_accelerated: false }],
+        })),
+    }
+}
+
+/// Extract remote device name from a SessionAccept message
+fn extract_remote_name(msg: &messages::Message) -> String {
+    if let Some(messages::message::Payload::SessionAccept(a)) = &msg.payload {
+        a.device_name.clone()
+    } else {
+        "Unknown".to_string()
+    }
+}
+
+/// View a remote session: decode video, send input, play audio.
+/// Handshake (SessionInit/SessionAccept) is already done by connect_lan/connect_internet.
 async fn view_session<W, R>(
-    mut ctrl_send: MessageSender<W>,
-    mut ctrl_recv: MessageReceiver<R>,
+    ctrl_send: MessageSender<W>,
+    ctrl_recv: MessageReceiver<R>,
     input_send: MessageSender<W>,
     mut video_recv: MessageReceiver<R>,
     audio_recv: Option<MessageReceiver<R>>,
@@ -654,27 +811,10 @@ where
     W: AsyncWrite + Unpin + Send + 'static,
     R: AsyncRead + Unpin + Send + 'static,
 {
-    // Send SessionInit
-    ctrl_send.send(&messages::Message {
-        sequence: 0, timestamp_us: rd_protocol::now_us(),
-        payload: Some(messages::message::Payload::SessionInit(messages::SessionInit {
-            device_name: hostname::get().map(|h| h.to_string_lossy().to_string()).unwrap_or_default(),
-            os: std::env::consts::OS.to_string(), screen_width: 1920, screen_height: 1080,
-            codecs: vec![messages::CodecCapability { codec: messages::Codec::Vp9.into(), hardware_accelerated: false }],
-        })),
-    }).await.map_err(|e| anyhow::anyhow!("send init: {e}"))?;
-
-    let msg = ctrl_recv.recv().await.map_err(|e| anyhow::anyhow!("recv accept: {e}"))?;
-    let remote_name = if let Some(messages::message::Payload::SessionAccept(a)) = &msg.payload {
-        a.device_name.clone()
-    } else { "Unknown".to_string() };
-
-    state.lock().unwrap().status = ConnectionStatus::Connected { remote_name };
-    ctx.request_repaint();
-
     // Heartbeat receiver + clipboard from remote
     let sr = state.clone();
     tokio::spawn(async move {
+        let mut ctrl_recv = ctrl_recv;
         let cb = ClipboardSync::new().ok();
         loop {
             match ctrl_recv.recv().await {

@@ -26,12 +26,12 @@ impl IrohTransport {
             .await
             .map_err(|e| NetError::Connection(format!("iroh endpoint bind: {e}")))?;
 
-        endpoint.online().await;
-
-        tracing::info!(
-            device_id = %identity.device_id_short(),
-            "iroh transport online"
-        );
+        // Wait for relay connectivity with a timeout — don't block forever if
+        // relay servers are unreachable (the endpoint is still usable without them)
+        match tokio::time::timeout(Duration::from_secs(10), endpoint.online()).await {
+            Ok(_) => tracing::info!(device_id = %identity.device_id_short(), "iroh transport online"),
+            Err(_) => tracing::warn!(device_id = %identity.device_id_short(), "iroh online timed out after 10s, continuing anyway"),
+        }
 
         Ok(Self { endpoint, identity })
     }
@@ -102,7 +102,14 @@ impl IrohTransport {
                 Ok(conn)
             }
             Ok(Err(e)) => Err(NetError::Connection(format!("iroh connect: {e}"))),
-            Err(_) => Err(NetError::Timeout),
+            Err(_) => Err(NetError::Connection(
+                "Connection timed out after 30s. Check that:\n\
+                 - The remote machine is running and has this app open\n\
+                 - Both machines have internet access\n\
+                 - Firewalls allow UDP traffic (Windows: check Windows Defender Firewall)\n\
+                 - The connection code was copied completely\n\
+                 - If on the same network, try connecting by IP address instead".to_string()
+            )),
         }
     }
 
@@ -127,10 +134,13 @@ impl IrohTransport {
     }
 }
 
-/// Parse a connection ticket (base64-encoded EndpointAddr) back to an EndpointAddr
+/// Parse a connection ticket (base64-encoded EndpointAddr) back to an EndpointAddr.
+/// Strips ALL whitespace (not just trim) to handle newlines/spaces from copy-paste
+/// through messaging apps.
 pub fn parse_connection_ticket(ticket: &str) -> Result<EndpointAddr, NetError> {
+    let cleaned: String = ticket.chars().filter(|c| !c.is_whitespace()).collect();
     let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .decode(ticket.trim())
+        .decode(&cleaned)
         .map_err(|e| NetError::Connection(format!("invalid ticket encoding: {e}")))?;
     let addr: EndpointAddr = serde_json::from_slice(&bytes)
         .map_err(|e| NetError::Connection(format!("invalid ticket data: {e}")))?;
@@ -144,8 +154,13 @@ pub fn parse_device_id(id_str: &str) -> Result<iroh::PublicKey, NetError> {
         .map_err(|e| NetError::Connection(format!("invalid device ID: {e}")))
 }
 
-/// Check if a string looks like a connection ticket (base64) vs a device ID (hex)
+/// Check if a string looks like a connection ticket (base64) vs a device ID (hex).
+/// Tries actual base64 decode rather than heuristics to avoid false positives.
 pub fn is_connection_ticket(s: &str) -> bool {
-    // Tickets are base64-encoded JSON, typically longer and contain non-hex chars
-    s.len() > 80 && (s.contains('e') || s.contains('/') || s.contains('-') || s.contains('_'))
+    let cleaned: String = s.chars().filter(|c| !c.is_whitespace()).collect();
+    // Tickets (base64 JSON) are much longer than device IDs (~64 hex chars)
+    cleaned.len() > 80
+        && base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(&cleaned)
+            .is_ok()
 }
